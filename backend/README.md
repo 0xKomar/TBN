@@ -78,6 +78,9 @@ cp .env.example .env
 docker compose up --build
 ```
 
+Compose uruchamia cały pionowy wycinek: dashboard pod
+<http://localhost:5173> oraz API pod <http://localhost:8000>.
+
 ## Konfiguracja
 
 Zmienne środowiskowe można umieścić w pliku `.env` w katalogu głównym.
@@ -86,6 +89,8 @@ Zmienne środowiskowe można umieścić w pliku `.env` w katalogu głównym.
 |---|---|---|
 | `APP_MODE` | `DEMO` | tryb pracy; scenariusze i reset wymagają `DEMO` |
 | `FRONTEND_ORIGIN` | `http://localhost:5173` | origin dopuszczony przez CORS |
+| `VITE_API_BASE_URL` | `http://localhost:8000/api/v1` | publiczny adres API używany przez dashboard |
+| `SITE_URL` | `http://localhost:5173` | bazowy adres metadanych frontendu |
 
 Przykład znajduje się w pliku [`../.env.example`](../.env.example).
 

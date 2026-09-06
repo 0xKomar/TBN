@@ -5,6 +5,8 @@ description = "UrbanFlow dispatcher support API"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115,<1.0",
+    "gtfs-realtime-bindings>=1.0,<2.0",
+    "httpx>=0.28,<1.0",
     "pydantic>=2.10,<3.0",
     "uvicorn[standard]>=0.34,<1.0",
 ]

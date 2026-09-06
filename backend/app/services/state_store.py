@@ -1,9 +1,11 @@
 from collections import defaultdict
-from datetime import timedelta
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 from math import atan2, cos, degrees, radians, sin
 
 from app.config import Settings
 from app.domain.common import utc_now
+from app.domain.demo_vehicle import CreateDemoVehicleRequest
 from app.domain.dispatch import CreateDispatchRequest, Dispatch, DispatchStatus
 from app.domain.recommendation import Recommendation, RecommendationStatus
 from app.domain.route import RouteShape, RouteSummary
@@ -12,6 +14,7 @@ from app.domain.vehicle import (
     Freshness,
     OccupancyStatus,
     VehicleHistoryPoint,
+    VehicleMode,
     VehicleState,
 )
 from app.services.decision_engine import DecisionEngine
@@ -30,6 +33,18 @@ ROUTE_4_COORDINATES = [
     [19.9380, 50.0670],
     [19.9510, 50.0630],
 ]
+
+DEMO_MAX_SPEED = 5
+
+
+@dataclass
+class DemoRun:
+    vehicle_id: str
+    route_id: str
+    direction_id: int
+    capacity: int
+    simulation_speed: int
+    created_at: datetime
 
 
 def occupancy_status(load_factor: float | None) -> OccupancyStatus:
@@ -56,16 +71,18 @@ class StateStore:
         self.history: dict[str, list[VehicleHistoryPoint]] = defaultdict(list)
         self.recommendations: dict[str, Recommendation] = {}
         self.dispatches: dict[str, Dispatch] = {}
+        self.demo_runs: dict[str, DemoRun] = {}
         self.routes: dict[str, RouteSummary] = {}
         self.shapes: dict[tuple[str, int], list[list[float]]] = {}
         self.active_scenario_id: str | None = None
         self.last_realtime_update = utc_now()
         self.source_health = {
-            "gtfsStatic": "ok",
-            "gtfsRealtime": "ok",
-            "occupancy": "ok",
+            "gtfsStatic": "ok" if settings.seed_fixtures else "stale",
+            "gtfsRealtime": "ok" if settings.seed_fixtures else "stale",
+            "occupancy": "ok" if settings.seed_fixtures else "offline",
         }
-        self._seed_demo_data()
+        if settings.seed_fixtures:
+            self._seed_demo_data()
 
     def _seed_demo_data(self) -> None:
         now = utc_now()
@@ -149,10 +166,15 @@ class StateStore:
         )
 
     def reset_demo(self) -> None:
-        self.vehicles.clear()
+        self.vehicles = {
+            vehicle_id: vehicle
+            for vehicle_id, vehicle in self.vehicles.items()
+            if not vehicle.is_simulation
+        }
         self.history.clear()
         self.recommendations.clear()
         self.dispatches.clear()
+        self.demo_runs.clear()
         self.active_scenario_id = None
         self.last_realtime_update = utc_now()
         self.source_health = {
@@ -160,7 +182,52 @@ class StateStore:
             "gtfsRealtime": "ok",
             "occupancy": "ok",
         }
-        self._seed_demo_data()
+        if self.settings.seed_fixtures:
+            self.vehicles.clear()
+            self._seed_demo_data()
+
+    def apply_realtime_snapshot(self, snapshot) -> None:
+        now = utc_now()
+        simulations = {
+            vehicle_id: vehicle
+            for vehicle_id, vehicle in self.vehicles.items()
+            if vehicle.is_simulation
+        }
+        incoming_ids = {vehicle.vehicle_id for vehicle in snapshot.vehicles}
+        # A single GTFS-RT batch is not a complete truth set. Keep an omitted
+        # vehicle at its last location until it exceeds the configured stale
+        # window, so an intermittent feed cannot make it blink off the map.
+        recently_missing_vehicles = {
+            vehicle_id: vehicle.model_copy(update={"freshness": Freshness.STALE})
+            for vehicle_id, vehicle in self.vehicles.items()
+            if not vehicle.is_simulation
+            and vehicle_id not in incoming_ids
+            and (now - vehicle.position_measured_at).total_seconds()
+            <= self.settings.stale_max_age_seconds
+        }
+        self.vehicles = recently_missing_vehicles
+        self.vehicles.update(
+            {vehicle.vehicle_id: vehicle for vehicle in snapshot.vehicles}
+        )
+        self.vehicles.update(simulations)
+        self.routes.update(snapshot.routes)
+        self.shapes.update(snapshot.shapes)
+        self.last_realtime_update = utc_now()
+        online_count = len(snapshot.modes_online)
+        self.source_health["gtfsStatic"] = "ok" if snapshot.routes else "offline"
+        self.source_health["gtfsRealtime"] = (
+            "ok" if online_count == 2 else "stale" if online_count == 1 else "offline"
+        )
+        for vehicle in snapshot.vehicles:
+            points = self.history[vehicle.vehicle_id]
+            if not points or points[-1].measured_at < vehicle.position_measured_at:
+                points.append(
+                    self._history_point(vehicle, vehicle.position_measured_at)
+                )
+                self.history[vehicle.vehicle_id] = points[-360:]
+
+    def mark_realtime_failure(self) -> None:
+        self.source_health["gtfsRealtime"] = "offline"
 
     def list_vehicles(self) -> list[VehicleState]:
         self.refresh_simulations()
@@ -376,6 +443,87 @@ class StateStore:
                 DispatchStatus.IN_SERVICE if progress < 1 else DispatchStatus.COMPLETED
             )
             self._upsert_simulated_vehicle(dispatch, progress)
+        for run in self.demo_runs.values():
+            simulated_seconds = (
+                (now - run.created_at).total_seconds()
+                * min(run.simulation_speed, DEMO_MAX_SPEED)
+            )
+            progress = (simulated_seconds / 900) % 1
+            self._upsert_demo_vehicle(run, progress)
+
+    def create_demo_vehicle(self, request: CreateDemoVehicleRequest) -> VehicleState:
+        if request.route_id not in self.routes:
+            raise KeyError("Route not found")
+        candidates = [
+            direction_id
+            for route_id, direction_id in self.shapes
+            if route_id == request.route_id
+        ]
+        if not candidates:
+            raise KeyError("Route shape not found")
+        direction_id = (
+            request.direction_id
+            if request.direction_id in candidates
+            else candidates[0]
+        )
+        number = len(self.demo_runs) + 1
+        vehicle_id = f"SIM-DEMO-{number:02d}"
+        while vehicle_id in self.vehicles:
+            number += 1
+            vehicle_id = f"SIM-DEMO-{number:02d}"
+        run = DemoRun(
+            vehicle_id=vehicle_id,
+            route_id=request.route_id,
+            direction_id=direction_id,
+            capacity=request.capacity,
+            simulation_speed=min(request.simulation_speed, DEMO_MAX_SPEED),
+            created_at=utc_now(),
+        )
+        self.demo_runs[vehicle_id] = run
+        return self._upsert_demo_vehicle(run, 0)
+
+    def delete_demo_vehicle(self, vehicle_id: str) -> bool:
+        if vehicle_id not in self.demo_runs:
+            return False
+        self.demo_runs.pop(vehicle_id, None)
+        self.vehicles.pop(vehicle_id, None)
+        self.history.pop(vehicle_id, None)
+        return True
+
+    def _upsert_demo_vehicle(self, run: DemoRun, progress: float) -> VehicleState:
+        coordinates = self.shapes[(run.route_id, run.direction_id)]
+        longitude, latitude, bearing = self._position_on_shape(coordinates, progress)
+        now = utc_now()
+        route = self.routes[run.route_id]
+        vehicle = VehicleState(
+            vehicle_id=run.vehicle_id,
+            trip_id=f"demo-trip-{run.vehicle_id}",
+            route_id=run.route_id,
+            route_short_name=route.short_name,
+            headsign="WIRTUALNY POJAZD DEMO",
+            direction_id=run.direction_id,
+            latitude=latitude,
+            longitude=longitude,
+            bearing=bearing,
+            speed_mps=5,
+            passenger_count=0,
+            capacity=run.capacity,
+            load_factor=0,
+            occupancy_confidence=1,
+            occupancy_status=OccupancyStatus.LOW,
+            position_measured_at=now,
+            occupancy_measured_at=now,
+            updated_at=now,
+            freshness=Freshness.SIMULATION,
+            source="SIMULATOR",
+            vehicle_mode=VehicleMode.TRAM,
+            is_simulation=True,
+        )
+        self.vehicles[vehicle.vehicle_id] = vehicle
+        points = self.history[vehicle.vehicle_id]
+        if not points or (now - points[-1].measured_at).total_seconds() >= 1:
+            points.append(self._history_point(vehicle, now))
+        return vehicle
 
     def _upsert_simulated_vehicle(self, dispatch: Dispatch, progress: float) -> None:
         coordinates = self.shapes[(dispatch.route_id, dispatch.direction_id)]

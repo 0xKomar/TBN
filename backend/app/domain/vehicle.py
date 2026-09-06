@@ -22,6 +22,11 @@ class Freshness(StrEnum):
     SIMULATION = "SIMULATION"
 
 
+class VehicleMode(StrEnum):
+    TRAM = "TRAM"
+    BUS = "BUS"
+
+
 class VehicleState(ApiModel):
     vehicle_id: str
     trip_id: str
@@ -47,6 +52,7 @@ class VehicleState(ApiModel):
     updated_at: datetime
     freshness: Freshness
     source: str
+    vehicle_mode: VehicleMode = VehicleMode.TRAM
     is_simulation: bool = False
 
 
