@@ -41,6 +41,8 @@ dodany w kolejnym etapie.
 
 ## Szybki start
 
+Poniższe polecenia uruchom z głównego katalogu repozytorium.
+
 ### Opcja 1: `uv`
 
 ```bash
@@ -85,7 +87,7 @@ Zmienne środowiskowe można umieścić w pliku `.env` w katalogu głównym.
 | `APP_MODE` | `DEMO` | tryb pracy; scenariusze i reset wymagają `DEMO` |
 | `FRONTEND_ORIGIN` | `http://localhost:5173` | origin dopuszczony przez CORS |
 
-Przykład znajduje się w pliku `.env.example`.
+Przykład znajduje się w pliku [`../.env.example`](../.env.example).
 
 ## Zasady API
 
@@ -585,11 +587,11 @@ przeciążenia oraz pełny przepływ scenariusz → rekomendacja → dispatch �
 
 ```text
 UrbanFlow/
-├── README.md
 ├── UrbanFlow_IMPLEMENTATION_PLAN.md
 ├── docker-compose.yml
 ├── .env.example
 └── backend/
+    ├── README.md
     ├── Dockerfile
     ├── pyproject.toml
     ├── uv.lock
@@ -613,4 +615,5 @@ UrbanFlow/
 6. Autoryzacja operacji dyspozytorskich i audyt.
 7. Frontend React z mapą MapLibre.
 
-Pełny plan znajduje się w `UrbanFlow_IMPLEMENTATION_PLAN.md`.
+Pełny plan znajduje się w
+[`../UrbanFlow_IMPLEMENTATION_PLAN.md`](../UrbanFlow_IMPLEMENTATION_PLAN.md).
