@@ -1,0 +1,9 @@
+services:
+  backend:
+    build: ./backend
+    environment:
+      APP_MODE: ${APP_MODE:-DEMO}
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:5173}
+    ports:
+      - "8000:8000"
+
